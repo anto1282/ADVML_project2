@@ -475,25 +475,27 @@ if __name__ == "__main__":
 
         experiments_folder = args.experiment_folder
         os.makedirs(f"{experiments_folder}", exist_ok=True)
-        model = VAE(
-            GaussianPrior(M),
-            GaussianDecoder([new_decoder().to(device) for _ in range(args.num_decoders)]),
-            GaussianEncoder(new_encoder()),
-        ).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-        train(
-            model,
-            optimizer,
-            mnist_train_loader,
-            args.epochs_per_decoder,
-            args.device,
-        )
-        os.makedirs(f"{experiments_folder}", exist_ok=True)
+        for p in range(args.num_reruns):
+            model = VAE(
+                GaussianPrior(M),
+                GaussianDecoder([new_decoder().to(device) for _ in range(args.num_decoders)]),
+                GaussianEncoder(new_encoder()),
+            ).to(device)
+            
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+            train(
+                model,
+                optimizer,
+                mnist_train_loader,
+                args.epochs_per_decoder,
+                args.device,
+            )
+            os.makedirs(f"{experiments_folder}", exist_ok=True)
 
-        torch.save(
-            model.state_dict(),
-            f"{experiments_folder}/model.pt",
-        )
+            torch.save(
+                model.state_dict(),
+                f"{experiments_folder}/model_run{p}_dec{args.num_decoders}.pt",
+            )
 
     elif args.mode == "sample":
         model = VAE(
