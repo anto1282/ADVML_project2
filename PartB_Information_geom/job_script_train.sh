@@ -20,4 +20,4 @@ module load cuda/11.3
 source /dtu/blackhole/0e/154958/miniconda3/bin/activate adlcv-ex1
 
 
-python ensemble_vae.py geodesics --device cuda --batch-size 2048 
+python ensemble_vae.py train --device cuda --num-decoders 1

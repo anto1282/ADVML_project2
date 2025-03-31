@@ -418,12 +418,12 @@ if __name__ == "__main__":
             plt.legend()
             plt.savefig(f"{direc}/{title}_at_step_{step}.png")
 
-    def save_geodesic_data_npz(latents, labels, geodesics, pairs, pair_labels, path="geodesics_data.npz"):
+    def save_geodesic_data_npz(latents, labels, geodesics, pairs, pair_labels,losses, path="geodesics_data.npz"):
             np_geodesics = [g.cpu().detach().numpy() for g in geodesics]
             np_starts = [p[0].cpu().detach().numpy() for p in pairs]
             np_ends = [p[1].cpu().detach().numpy() for p in pairs]
             np_classes = np.array(pair_labels)
-
+            np_losses = np.array(losses)
             np.savez(path,
                     latent_points=latents.cpu().numpy(),
                     labels=labels.cpu().numpy(),
@@ -431,38 +431,61 @@ if __name__ == "__main__":
                     start_points=np_starts,
                     end_points=np_ends,
                     start_classes=np_classes[:, 0],
-                    end_classes=np_classes[:, 1])
+                    end_classes=np_classes[:, 1],
+                    losses = np_losses)
     
     def plot_latent_space_with_geodesics(latents, labels, geodesics, pairs, save_path="geodesic_plot.png"):
-        latents = latents.cpu().numpy()
-        labels = labels.cpu().numpy()
+        latents_np = latents.cpu().numpy()
+        labels_np = labels.cpu().numpy()
 
         plt.figure(figsize=(10, 10))
-
-        # Define three colors for the three classes
         color_map = {0: 'orange', 1: 'skyblue', 2: 'purple'}
 
         for cls in [0, 1, 2]:
-            mask = labels == cls
+            mask = labels_np == cls
             plt.scatter(
-                latents[mask, 0], latents[mask, 1],
-                alpha=0.3, label=f"Class {cls}", color=color_map[cls]
+                latents_np[mask, 0], latents_np[mask, 1],
+                alpha=0.1, label=f"Class {cls}", color=color_map[cls]
             )
 
-        # Plot geodesics
-        for i,geo in enumerate(geodesics):
-            geo = geo.detach().cpu().numpy()
-            plt.plot(geo[:, 0], geo[:, 1], linewidth=2, color='yellow', label = "Geodesic" if i == 0 else None)
-            
-            start = geo[0]
-            end = geo[-1]
+        def get_index_of_latent(point_tensor):
+            for i, latent in enumerate(latents):
+                if torch.allclose(point_tensor, latent, atol=1e-4):  # Tweak tolerance as needed
+                    return i
+            return None  # Not found
 
-            # Connect endpoints with dashed line
-            plt.plot([start[0], end[0]], [start[1], end[1]], linestyle='dashed', color='blue', alpha=0.5, label="Straight line" if i == 0 else None)
+        special_plotted = False
 
-            # Highlight start and end
-            plt.scatter([start[0]], [start[1]], color='green', s=60, marker='o')
-            plt.scatter([end[0]], [end[1]], color='green', s=60, marker='o')
+        for i, (geo, (start, end)) in enumerate(zip(geodesics, pairs)):
+            geo_np = geo.detach().cpu().numpy()
+
+            start_idx = get_index_of_latent(start)
+            end_idx = get_index_of_latent(end)
+
+            if start_idx is None or end_idx is None:
+                continue  # Skip if we can't match them
+
+            start_label = labels_np[start_idx]
+            end_label = labels_np[end_idx]
+
+            is_special = (start_label == 2 and end_label == 0)
+
+            color = 'red' if is_special and not special_plotted else 'yellow'
+            linewidth = 3 if is_special and not special_plotted else 2
+            label_geo = "Special Geodesic (2→0)" if is_special and not special_plotted else ("Geodesic" if i == 0 else None)
+
+            plt.plot(geo_np[:, 0], geo_np[:, 1], linewidth=linewidth, color=color, label=label_geo)
+
+            start_np = geo_np[0]
+            end_np = geo_np[-1]
+
+            plt.plot([start_np[0], end_np[0]], [start_np[1], end_np[1]], linestyle='dashed', color='blue', alpha=0.5, label="Straight line" if i == 0 else None)
+
+            plt.scatter([start_np[0]], [start_np[1]], color='green', s=60, marker='o')
+            plt.scatter([end_np[0]], [end_np[1]], color='green', s=60, marker='o')
+
+            if is_special and not special_plotted:
+                special_plotted = True
 
         plt.title("Latent Space with Geodesics by Class")
         plt.axis('equal')
@@ -475,25 +498,27 @@ if __name__ == "__main__":
 
         experiments_folder = args.experiment_folder
         os.makedirs(f"{experiments_folder}", exist_ok=True)
-        model = VAE(
-            GaussianPrior(M),
-            GaussianDecoder([new_decoder().to(device) for _ in range(args.num_decoders)]),
-            GaussianEncoder(new_encoder()),
-        ).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-        train(
-            model,
-            optimizer,
-            mnist_train_loader,
-            args.epochs_per_decoder,
-            args.device,
-        )
-        os.makedirs(f"{experiments_folder}", exist_ok=True)
+        for p in range(args.num_reruns):
+            model = VAE(
+                GaussianPrior(M),
+                GaussianDecoder([new_decoder().to(device) for _ in range(args.num_decoders)]),
+                GaussianEncoder(new_encoder()),
+            ).to(device)
+            
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+            train(
+                model,
+                optimizer,
+                mnist_train_loader,
+                args.epochs_per_decoder,
+                args.device,
+            )
+            os.makedirs(f"{experiments_folder}", exist_ok=True)
 
-        torch.save(
-            model.state_dict(),
-            f"{experiments_folder}/model.pt",
-        )
+            torch.save(
+                model.state_dict(),
+                f"{experiments_folder}/model_run{p}_dec{args.num_decoders}.pt",
+            )
 
     elif args.mode == "sample":
         model = VAE(
@@ -534,109 +559,110 @@ if __name__ == "__main__":
         print("Print mean test elbo:", mean_elbo)
 
     elif args.mode == "geodesics":
-
-        model = VAE(
-            GaussianPrior(M),
-            GaussianDecoder(new_decoder()),
-            GaussianEncoder(new_encoder()),
-        ).to(device)
-        model.load_state_dict(torch.load(args.experiment_folder + "/model.pt"))
-        model.eval()
-        all_labels = []
-        all_latents = []
         
-        with torch.no_grad():
-            for x, labels in mnist_test_loader:
-                x = x.to(device)
-                z = model.encoder(x).mean  # or .rsample() if you want stochastic encoding
-                all_latents.append(z)
-                all_labels.append(labels)
+        opti_steps = 400
+        total_steps = opti_steps*args.num_reruns*args.num_curves
+        progress_bar = tqdm(range(total_steps), desc="Optimizing Path:")
 
-        all_latents = torch.cat(all_latents, dim=0)  # shape: (N, latent_dim)
-        all_labels = torch.cat(all_labels,dim=0)
-
-        import json
-
-        n_pairs = args.num_curves
-        pair_file = "geodesic_pair_indices.json"
-
-        if os.path.exists(pair_file):
-            print(f"Loading geodesic pairs from {pair_file}")
-            with open(pair_file, "r") as f:
-                pair_indices = json.load(f)
-        else:
-            print(f"{pair_file} not found. Generating new pairs and saving...")
-            N = all_latents.size(0)
-            all_indices = torch.randperm(N)[:2 * n_pairs]
-            pair_indices = [(all_indices[i].item(), all_indices[i + 1].item()) for i in range(0, 2 * n_pairs, 2)]
-
-            with open(pair_file, "w") as f:
-                json.dump(pair_indices, f, indent=2)
-
-        pairs = [(all_latents[i], all_latents[j]) for i, j in pair_indices]
-        pair_labels = [(all_labels[i], all_labels[j]) for i, j in pair_indices]
-
-        from pathlib import Path
-
-        geodesics = []
-
-        for i,(x0,xN) in enumerate(pairs):
-
-            x0 = x0.unsqueeze(0)
-            xN = xN.unsqueeze(0)
+        for q in range(args.num_reruns):
+            model_name =f"model_run{q}_dec{args.num_decoders}"
+            model = VAE(
+                GaussianPrior(M),
+                GaussianDecoder([new_decoder() for _ in range(args.num_decoders)]),
+                GaussianEncoder(new_encoder()),
+            ).to(device)
+            model.load_state_dict(torch.load(args.experiment_folder + f"/{model_name}.pt"))
+            model.eval()
+            all_labels = []
+            all_latents = []
             
-            dims = 2
-            num_steps = args.num_t
+            with torch.no_grad():
+                for x, labels in mnist_test_loader:
+                    x = x.to(device)
+                    z = model.encoder(x).mean  # or .rsample() if you want stochastic encoding
+                    all_latents.append(z)
+                    all_labels.append(labels)
 
-            x_inner = torch.linspace(0, 1, num_steps).unsqueeze(1).to(device) * (xN - x0) + x0
-            x_inner = torch.nn.Parameter(x_inner,requires_grad = True).to(device)
-            optimizer = torch.optim.Adam([x_inner], lr=0.01)
+            all_latents = torch.cat(all_latents, dim=0)  # shape: (N, latent_dim)
+            all_labels = torch.cat(all_labels,dim=0)
 
-            opti_dir = f"Optimizations/Pair_{i}_optimization graphs"
-            Path(opti_dir).mkdir(parents=True, exist_ok=True)
+            import json
 
-            loss_clone = 0
-            loss = 0
-            for step in tqdm(range(50),desc=loss):
-                x = torch.cat([x0, x_inner, xN], dim=0).to(device)
-                if step == 0:
-                    x_start = x_inner
-                c_dot = calc_c_dot(x)
-                                
-                loss = 0.0
-                S = len(c_dot)
-                for i, c_dot_s in enumerate(c_dot):
-                    #The jacobian at point x[i]
-                    J = eval_J(model, x[i])
+            n_pairs = args.num_curves
+            pair_file = "geodesic_pair_indices.json"
 
-                    #Loss == energy
-                    loss += (c_dot_s.T @J.T @ J @ c_dot_s) / S
+            if os.path.exists(pair_file):
+                print(f"Loading geodesic pairs from {pair_file}")
+                with open(pair_file, "r") as f:
+                    pair_indices = json.load(f)
+            else:
+                print(f"{pair_file} not found. Generating new pairs and saving...")
+                N = all_latents.size(0)
+                all_indices = torch.randperm(N)[:2 * n_pairs]
+                pair_indices = [(all_indices[i].item(), all_indices[i + 1].item()) for i in range(0, 2 * n_pairs, 2)]
 
-                optimizer.zero_grad()
-                loss.backward(retain_graph = True)
-                optimizer.step()
+                with open(pair_file, "w") as f:
+                    json.dump(pair_indices, f, indent=2)
 
-                if step % 25 == 0:
-                    print(f"Step {step}: loss = {loss.item():.4f}")
-                    plot_path(x_inner, x0, xN,step, title=f"During Optimization at step {step+1}", direc=opti_dir)
-            x0 = x0.unsqueeze(0) if x0.dim() == 1 else x0
-            xN = xN.unsqueeze(0) if xN.dim() == 1 else xN
-            x_inner = x_inner if x_inner.dim() == 2 else x_inner.unsqueeze(0)  # Ensure 2D
+            pairs = [(all_latents[i], all_latents[j]) for i, j in pair_indices]
+            pair_labels = [(all_labels[i], all_labels[j]) for i, j in pair_indices]
 
-            geodesics.append(torch.cat([x0, x_inner.detach(), xN], dim=0))
+            from pathlib import Path
 
-        pair_labels = []
-        for start, end in pairs:
-            start_idx = torch.argmin(torch.norm(all_latents - start.unsqueeze(0), dim=1))
-            end_idx = torch.argmin(torch.norm(all_latents - end.unsqueeze(0), dim=1))
-            pair_labels.append((all_labels[start_idx].item(), all_labels[end_idx].item()))
+            geodesics = []
+            losses = []
 
-        
+            for i,(x0,xN) in enumerate(pairs):
+
+                x0 = x0.unsqueeze(0)
+                xN = xN.unsqueeze(0)
+                
+                dims = 2
+                num_steps = args.num_t
+
+                x_inner = torch.linspace(0, 1, num_steps).unsqueeze(1).to(device) * (xN - x0) + x0
+                x_inner = torch.nn.Parameter(x_inner,requires_grad = True).to(device)
+                optimizer = torch.optim.Adam([x_inner], lr=0.01)
+
+                loss_clone = 0
+                loss = 0
+                for step in range(opti_steps):
+                    x = torch.cat([x0, x_inner, xN], dim=0).to(device)
+
+                    loss = 0.0
+                    decoders = model.decoder.decoder_nets
+                    for dec_i in decoders:
+                        for dec_k in decoders:
+                            z1 = dec_i(x[:-1])
+                            z2 = dec_k(x[1:])
+                            loss += torch.sum((z1 - z2) ** 2)
+                    loss /= (len(decoders) ** 2)
+                    loss /= args.num_t
+                    progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}",model = f"{q+1}/{args.num_reruns}", pair=f"{i+1}/{args.num_curves}")
+                    progress_bar.update()
+
+                    optimizer.zero_grad()
+                    loss.backward(retain_graph=True)
+                    torch.nn.utils.clip_grad_norm_([x_inner], max_norm=1.0)
+                    optimizer.step()
+
+                losses.append(loss.item())
+                x0 = x0.unsqueeze(0) if x0.dim() == 1 else x0
+                xN = xN.unsqueeze(0) if xN.dim() == 1 else xN
+                x_inner = x_inner if x_inner.dim() == 2 else x_inner.unsqueeze(0)  # Ensure 2D
+
+                geodesics.append(torch.cat([x0, x_inner.detach(), xN], dim=0))
+
+            pair_labels = []
+            for start, end in pairs:
+                start_idx = torch.argmin(torch.norm(all_latents - start.unsqueeze(0), dim=1))
+                end_idx = torch.argmin(torch.norm(all_latents - end.unsqueeze(0), dim=1))
+                pair_labels.append((all_labels[start_idx].item(), all_labels[end_idx].item()))
+
             
-        save_geodesic_data_npz(all_latents, all_labels, geodesics, pairs, pair_labels, path="geodesics_data.npz")
-        plot_latent_space_with_geodesics(all_latents, all_labels, geodesics, pairs)
+            print("Plotting and saving")    
+            save_geodesic_data_npz(all_latents, all_labels, geodesics, pairs, pair_labels,losses, path=f"geodesic_data/{model_name}_data.npz")
+            plot_latent_space_with_geodesics(all_latents, all_labels, geodesics, pairs, save_path = f"geodesic_plots/{model_name}_plot.png")
 
+                
             
-            
-
-
