@@ -11,9 +11,7 @@ import torch.nn as nn
 import torch.distributions as td
 import torch.utils.data
 from tqdm import tqdm
-from copy import deepcopy
 import os
-import math
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import numpy as np
@@ -221,7 +219,7 @@ if __name__ == "__main__":
         "mode",
         type=str,
         default="train",
-        choices=["train", "sample", "eval", "geodesics"],
+        choices=["train", "sample", "eval", "geodesics", "plot"],
         help="what to do when running the script (default: %(default)s)",
     )
     parser.add_argument(
@@ -295,8 +293,9 @@ if __name__ == "__main__":
     )
 
     # args = parser.parse_args()
-
-    args = parser.parse_args(["geodesics", "--experiment-folder", "experiment", "--device", "cpu", "--batch-size", "2048", "--epochs-per-decoder", "50", "--latent-dim", "2", "--num-decoders", "3", "--num-reruns", "10", "--num-curves", "25", "--num-t", "20"])
+    
+    # For debugging
+    args = parser.parse_args(["plot", "--experiment-folder", "experiment", "--device", "cpu", "--batch-size", "2048", "--epochs-per-decoder", "50", "--latent-dim", "2", "--num-decoders", "3", "--num-reruns", "10", "--num-curves", "10", "--num-t", "20"])
 
     print("# Options")
     for key, value in sorted(vars(args).items()):
@@ -372,51 +371,8 @@ if __name__ == "__main__":
             nn.ConvTranspose2d(16, 1, 3, stride=2, padding=1, output_padding=1),
         )
         return decoder_net
-    def calc_c_dot(c):
-        c_shifted_fwd = torch.cat((c[1:], c[-1:]), dim=0)
-        c_shifted_back = torch.cat((c[:1], c[:-1]), dim=0)
-        return (c_shifted_fwd - c_shifted_back) / 2
     
-    def eval_J(model,latent_x):
-        latent_x = latent_x.unsqueeze(0)
-        jacobian = torch.autograd.functional.jacobian(model.decoder.decoder_net.forward, latent_x, 
-                                                    create_graph=False, strict=False, 
-                                                    vectorize=True, strategy='reverse-mode')
-            
-        J = jacobian.squeeze(0).squeeze(0).squeeze(2).flatten(0,1)
-        return J
-
-
-    def plot_path(x_inner, x0, xN, step,title="Path", show_points=True, show_line= True, direc= "Optimizations"):
-        """
-        Visualize the full path [x0, x_inner..., xN] in 2D.
-
-        Args:
-            x_inner: torch.Tensor of shape (N, 2)
-            x0: torch.Tensor of shape (2,)
-            xN: torch.Tensor of shape (2,)
-            title: Title of the plot
-            show_points: If True, annotate start and end
-        """
-        with torch.no_grad():
-            x_full = torch.cat([x0, x_inner, xN], dim=0)
-
-            xs = x_full[:, 0].cpu().numpy()
-            ys = x_full[:, 1].cpu().numpy()
-
-            plt.figure(figsize=(6, 6))
-            plt.plot(xs, ys, '-o' if show_line else "o", label='Path')
-            if show_points:
-                plt.text(xs[0], ys[0], 'Start', fontsize=10, color='green')
-                plt.text(xs[-1], ys[-1], 'End', fontsize=10, color='red')
-
-            plt.xlabel("x")
-            plt.ylabel("y")
-            plt.title(title)
-            plt.grid(True)
-            plt.axis('equal')
-            plt.legend()
-            plt.savefig(f"{direc}/{title}_at_step_{step}.png")
+###########################################
 
     def save_geodesic_data_npz(latents, labels, geodesics, pairs, pair_labels, path="geodesics_data.npz"):
             np_geodesics = [g.cpu().detach().numpy() for g in geodesics]
@@ -433,7 +389,7 @@ if __name__ == "__main__":
                     start_classes=np_classes[:, 0],
                     end_classes=np_classes[:, 1])
     
-    def plot_latent_space_with_geodesics(latents, labels, geodesics, pairs, save_path="geodesic_plot_test.png"):
+    def plot_latent_space_with_geodesics(latents, labels, geodesics, pairs, save_path="geodesic_plot2.png"):
         latents = latents.cpu().numpy()
         labels = labels.cpu().numpy()
 
@@ -467,7 +423,8 @@ if __name__ == "__main__":
         plt.yticks(fontsize=18)
         plt.legend(prop={'size': 18})
         plt.savefig(save_path)
-    
+
+###########################################
 
     # Choose mode to run
     if args.mode == "train":
@@ -500,17 +457,17 @@ if __name__ == "__main__":
             GaussianDecoder(new_decoder()),
             GaussianEncoder(new_encoder()),
         ).to(device)
-        model.load_state_dict(torch.load(args.experiment_folder + "/model.pt"))
+        model.load_state_dict(torch.load(args.experiment_folder + "/model.pt", map_location=torch.device('cpu')))
         model.eval()
 
         with torch.no_grad():
             samples = (model.sample(64)).cpu()
             save_image(samples.view(64, 1, 28, 28), args.samples)
 
-            data = next(iter(mnist_test_loader))[0].to(device)
-            recon = model.decoder(model.encoder(data).mean).mean
+            latents = next(iter(mnist_test_loader))[0].to(device)
+            recon = model.decoder(model.encoder(latents).mean).mean
             save_image(
-                torch.cat([data.cpu(), recon.cpu()], dim=0), "reconstruction_means.png"
+                torch.cat([latents.cpu(), recon.cpu()], dim=0), "reconstruction_means.png"
             )
 
     elif args.mode == "eval":
@@ -525,7 +482,7 @@ if __name__ == "__main__":
 
         elbos = []
         with torch.no_grad():
-            for x, y in mnist_test_loader:
+            for x, z in mnist_test_loader:
                 x = x.to(device)
                 elbo = model.elbo(x)
                 elbos.append(elbo)
@@ -541,22 +498,27 @@ if __name__ == "__main__":
         ).to(device)
         model.load_state_dict(torch.load(args.experiment_folder + "/model.pt", map_location=torch.device('cpu')))
         model.eval()
-        all_labels = []
-        all_latents = []
+
+ ###########################################
+
+        # Get latents and labels
+        labels = []
+        latents = []
         
         with torch.no_grad():
-            for x, labels in mnist_test_loader:
-                x = x.to(device)
-                z = model.encoder(x).mean  # or .rsample() if you want stochastic encoding
-                all_latents.append(z)
-                all_labels.append(labels)
+            for x, label in mnist_test_loader:
+                x = x.to(device) # Observation
+                z = model.encoder(x).mean # Latent representation
+                latents.append(z)
+                labels.append(label)
 
-        all_latents = torch.cat(all_latents, dim=0)  # shape: (N, latent_dim)
-        all_labels = torch.cat(all_labels,dim=0)
+        latents = torch.cat(latents, dim=0)  # shape: (N, latent_dim) -> (2048, 2)
+        labels = torch.cat(labels, dim=0)
 
         import json
-
-        n_pairs = 25
+        
+        # Load or generate latent variable pairs
+        n_pairs = args.num_curves
         pair_file = "geodesic_pair_indices.json"
 
         if os.path.exists(pair_file):
@@ -565,76 +527,63 @@ if __name__ == "__main__":
                 pair_indices = json.load(f)
         else:
             print(f"{pair_file} not found. Generating new pairs and saving...")
-            N = all_latents.size(0)
+            N = latents.size(0)
             all_indices = torch.randperm(N)[:2 * n_pairs]
             pair_indices = [(all_indices[i].item(), all_indices[i + 1].item()) for i in range(0, 2 * n_pairs, 2)]
 
             with open(pair_file, "w") as f:
                 json.dump(pair_indices, f, indent=2)
 
-        pairs = [(all_latents[i], all_latents[j]) for i, j in pair_indices]
-        pair_labels = [(all_labels[i], all_labels[j]) for i, j in pair_indices]
+        pairs = [(latents[i], latents[j]) for i, j in pair_indices]
+        pair_labels = [(labels[i], labels[j]) for i, j in pair_indices]
 
-        from pathlib import Path
 
+        # Compute geodesics for latent variable pairs
         geodesics = []
-
-        for i,(x0,xN) in enumerate(pairs):
-
-            x0 = x0.unsqueeze(0)
-            xN = xN.unsqueeze(0)
+        for i, (c0, c1) in enumerate(pairs):
+            c0 = c0.unsqueeze(0)
+            c1 = c1.unsqueeze(0)
             
-            dims = 2
-            num_steps = 20
+            num_t = args.num_t
+            ct = torch.nn.Parameter(
+                torch.linspace(0, 1, num_t + 2)[1:-1].unsqueeze(1) * (c1 - c0) + c0, 
+                requires_grad = True
+            ).to(device)
+            
+            optimizer = torch.optim.Adam([ct], lr=0.01)
 
-            x_inner = torch.linspace(0, 1, num_steps).unsqueeze(1).to(device) * (xN - x0) + x0
-            x_inner = torch.nn.Parameter(x_inner,requires_grad = True).to(device)
-            optimizer = torch.optim.Adam([x_inner], lr=0.01)
-
-            opti_dir = f"Optimizations/Pair_{i}_optimization graphs"
-            Path(opti_dir).mkdir(parents=True, exist_ok=True)
-
-            loss_clone = 0
             loss = 0
-            for step in tqdm(range(50),desc=loss):
-                x = torch.cat([x0, x_inner, xN], dim=0).to(device)
-                if step == 0:
-                    x_start = x_inner
-                c_dot = calc_c_dot(x)
-                                
-                loss = 0.0
-                S = len(c_dot)
-                for i, c_dot_s in enumerate(c_dot):
-                    #The jacobian at point x[i]
-                    J = eval_J(model, x[i])
+            for step in tqdm(range(50), desc=loss):
+                c = torch.cat([c0, ct, c1], dim=0).to(device)
+                f_c = model.decoder(c).mean
 
-                    #Loss == energy
-                    loss += (c_dot_s.T @J.T @ J @ c_dot_s) / S
+                loss = 0
+                S = len(c)
+                curve_energy = sum([((f_c[s] - f_c[s-1]) ** 2).sum() for s in range(1, S)])
+                loss += curve_energy
+
+                if step % 10 == 0:
+                    print(f"Step {step}: Loss = {loss.item():.4f}")
 
                 optimizer.zero_grad()
                 loss.backward(retain_graph = True)
                 optimizer.step()
 
-                if step % 25 == 0:
-                    print(f"Step {step}: loss = {loss.item():.4f}")
-                    plot_path(x_inner, x0, xN,step, title=f"During Optimization at step {step+1}", direc=opti_dir)
-            x0 = x0.unsqueeze(0) if x0.dim() == 1 else x0
-            xN = xN.unsqueeze(0) if xN.dim() == 1 else xN
-            x_inner = x_inner if x_inner.dim() == 2 else x_inner.unsqueeze(0)  # Ensure 2D
+            print(f"Geodesic {i + 1}/{len(pairs)}: Loss = {loss.item():.4f}")
 
-            geodesics.append(torch.cat([x0, x_inner.detach(), xN], dim=0))
+            geodesics.append(torch.cat([c0, ct.detach(), c1], dim=0))
 
         pair_labels = []
         for start, end in pairs:
-            start_idx = torch.argmin(torch.norm(all_latents - start.unsqueeze(0), dim=1))
-            end_idx = torch.argmin(torch.norm(all_latents - end.unsqueeze(0), dim=1))
-            pair_labels.append((all_labels[start_idx].item(), all_labels[end_idx].item()))
+            start_idx = torch.argmin(torch.norm(latents - start.unsqueeze(0), dim=1))
+            end_idx = torch.argmin(torch.norm(latents - end.unsqueeze(0), dim=1))
+            pair_labels.append((labels[start_idx].item(), labels[end_idx].item()))
 
-        save_geodesic_data_npz(all_latents, all_labels, geodesics, pairs, pair_labels, path="geodesics_data_test.npz")
+        save_geodesic_data_npz(latents, labels, geodesics, pairs, pair_labels, path="geodesics_data2.npz")
 
     elif args.mode == "plot":
         # Load the saved geodesic data
-        data = np.load("geodesics_data_test.npz")
+        data = np.load("geodesics_data2.npz")
         latents = torch.tensor(data["latent_points"])
         labels = torch.tensor(data["labels"])
         geodesics = [torch.tensor(g) for g in data["geodesic_points"]]
@@ -642,6 +591,8 @@ if __name__ == "__main__":
         pair_labels = np.array(data["start_classes"]), np.array(data["end_classes"])
 
         plot_latent_space_with_geodesics(latents, labels, geodesics, pairs)
+ 
+ ###########################################
             
             
 
