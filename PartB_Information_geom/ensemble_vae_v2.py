@@ -438,7 +438,7 @@ if __name__ == "__main__":
                     end_classes=np_classes[:, 1],
                     losses = np_losses)
     
-    def plot_latent_space_with_geodesics(latents, labels, geodesics, pairs, num_decoders, save_path="geodesic_plot.png"):
+    def plot_latent_space_with_geodesics(latents, labels, geodesics, pairs, save_path="geodesic_plot.png"):
         latents_np = latents.cpu().numpy()
         labels_np = labels.cpu().numpy()
 
@@ -492,14 +492,11 @@ if __name__ == "__main__":
             if is_special and not special_plotted:
                 special_plotted = True
 
-        if num_decoders > 1:
-            plt.title("Ensemble decoder VAE", fontsize=25, fontweight='bold')
-        else:
-            plt.title("Standard VAE", fontsize=25, fontweight='bold')
+        plt.title("Ensemble decoder VAE", fontsize=25, fontweight='bold')
         plt.axis('equal')
-        plt.xticks(fontsize=20)
-        plt.yticks(fontsize=20)
-        plt.legend(prop={'size': 20})
+        plt.xticks(fontsize=18)
+        plt.yticks(fontsize=18)
+        plt.legend(prop={'size': 18})
         plt.savefig(save_path)
     
 
@@ -674,16 +671,14 @@ if __name__ == "__main__":
 
     elif args.mode == "plot":
         # Load the geodesic data
-        for num_rerun in range(args.num_reruns):
-            for num_decoder in range(args.num_decoders):
-                model_name = f"model_run{num_rerun}_dec{num_decoder+1}"
-                data_path = f"geodesic_data/{model_name}_data.npz"
-                data = np.load(data_path)
-                all_latents = torch.tensor(data["latent_points"])
-                all_labels = torch.tensor(data["labels"])
-                geodesics = [torch.tensor(g) for g in data["geodesic_points"]]
-                pairs = [tuple(map(torch.tensor, p)) for p in data["start_points"]]
-                
-                plot_latent_space_with_geodesics(all_latents, all_labels, geodesics, pairs, num_decoder, save_path = f"geodesic_plots_v2/{model_name}_plot.png")
+        model_name = "model_run0_dec2"
+        data_path = f"geodesic_data/{model_name}_data.npz"
+        data = np.load(data_path)
+        all_latents = torch.tensor(data["latent_points"])
+        all_labels = torch.tensor(data["labels"])
+        geodesics = [torch.tensor(g) for g in data["geodesic_points"]]
+        pairs = [tuple(map(torch.tensor, p)) for p in data["start_points"]]
+        
+        plot_latent_space_with_geodesics(all_latents, all_labels, geodesics, pairs, save_path = f"geodesic_plots_v2/{model_name}_plot.png")
 
             

@@ -68,7 +68,7 @@ class GaussianEncoder(nn.Module):
 
 
 class GaussianDecoder(nn.Module):
-    def __init__(self, decoder_net):
+    def __init__(self, decoder_nets: list):
         """
         Define a Bernoulli decoder distribution based on a given decoder network.
 
@@ -79,7 +79,8 @@ class GaussianDecoder(nn.Module):
            tensor of dimension (batch_size, feature_dim1, feature_dim2).
         """
         super(GaussianDecoder, self).__init__()
-        self.decoder_net = decoder_net
+        self.decoder_nets = nn.ModuleList(decoder_nets)
+        self.num_decoders = len(decoder_nets)
         # self.std = nn.Parameter(torch.ones(28, 28) * 0.5, requires_grad=True) # In case you want to learn the std of the gaussian.
 
     def forward(self, z):
@@ -90,7 +91,8 @@ class GaussianDecoder(nn.Module):
         z: [torch.Tensor]
            A tensor of dimension `(batch_size, M)`, where M is the dimension of the latent space.
         """
-        means = self.decoder_net(z)
+        decoder_choice = 0
+        means = self.decoder_nets[decoder_choice](z)
         return td.Independent(td.Normal(loc=means, scale=1e-1), 3)
 
 
@@ -295,7 +297,7 @@ if __name__ == "__main__":
     # args = parser.parse_args()
     
     # For debugging
-    args = parser.parse_args(["plot", "--experiment-folder", "experiment", "--device", "cpu", "--batch-size", "2048", "--epochs-per-decoder", "50", "--latent-dim", "2", "--num-decoders", "3", "--num-reruns", "10", "--num-curves", "10", "--num-t", "20"])
+    args = parser.parse_args(["plot", "--experiment-folder", "experiment", "--device", "cpu", "--batch-size", "2048", "--epochs-per-decoder", "50", "--latent-dim", "2", "--num-decoders", "1", "--num-reruns", "10", "--num-curves", "10", "--num-t", "20"])
 
     print("# Options")
     for key, value in sorted(vars(args).items()):
@@ -417,11 +419,11 @@ if __name__ == "__main__":
             plt.scatter([start[0]], [start[1]], color='black', zorder=2, s=40, marker='o')
             plt.scatter([end[0]], [end[1]], color='black', zorder=2, s=40, marker='o')
 
-        plt.title("Standard VAE", fontsize=30, fontweight='bold')
+        plt.title("Standard VAE", fontsize=25, fontweight='bold')
         plt.axis('equal')
-        plt.xticks(fontsize=18)
-        plt.yticks(fontsize=18)
-        plt.legend(prop={'size': 18})
+        plt.xticks(fontsize=20)
+        plt.yticks(fontsize=20)
+        plt.legend(prop={'size': 20})
         plt.savefig(save_path)
 
 ###########################################
@@ -493,10 +495,14 @@ if __name__ == "__main__":
 
         model = VAE(
             GaussianPrior(M),
-            GaussianDecoder(new_decoder()),
+            GaussianDecoder([new_decoder() for _ in range(args.num_decoders)]),
             GaussianEncoder(new_encoder()),
         ).to(device)
-        model.load_state_dict(torch.load(args.experiment_folder + "/model.pt", map_location=torch.device('cpu')))
+
+        # print(os.getcwd())
+        model_name = "model_run1_dec1"
+        path = "../PartB_Information_geom/experiment/" + model_name + ".pt"
+        model.load_state_dict(torch.load(path, map_location=torch.device('cpu')))
         model.eval()
 
  ###########################################
@@ -541,9 +547,11 @@ if __name__ == "__main__":
         # Compute geodesics for latent variable pairs
         geodesics = []
         for i, (c0, c1) in enumerate(pairs):
+            # c0 and c1 are the start and end points of the curve
             c0 = c0.unsqueeze(0)
             c1 = c1.unsqueeze(0)
             
+            # ct is the points that approximate the curve and num_t is the number of points
             num_t = args.num_t
             ct = torch.nn.Parameter(
                 torch.linspace(0, 1, num_t + 2)[1:-1].unsqueeze(1) * (c1 - c0) + c0, 
@@ -554,16 +562,19 @@ if __name__ == "__main__":
 
             loss = 0
             for step in tqdm(range(50), desc=loss):
+                # Define the full curve
                 c = torch.cat([c0, ct, c1], dim=0).to(device)
+
+                # Apply the decoder mean to the curve
                 f_c = model.decoder(c).mean
 
                 loss = 0
+
+                # Compute the curve energy cf. eq. 8.7 "Differential Geometry For Generative Modeling"
                 S = len(c)
                 curve_energy = sum([((f_c[s] - f_c[s-1]) ** 2).sum() for s in range(1, S)])
+                
                 loss += curve_energy
-
-                if step % 10 == 0:
-                    print(f"Step {step}: Loss = {loss.item():.4f}")
 
                 optimizer.zero_grad()
                 loss.backward(retain_graph = True)
@@ -579,18 +590,21 @@ if __name__ == "__main__":
             end_idx = torch.argmin(torch.norm(latents - end.unsqueeze(0), dim=1))
             pair_labels.append((labels[start_idx].item(), labels[end_idx].item()))
 
-        save_geodesic_data_npz(latents, labels, geodesics, pairs, pair_labels, path="geodesics_data2.npz")
+        save_geodesic_data_npz(latents, labels, geodesics, pairs, pair_labels, path="geodesic_data/" + model_name + ".npz")
 
     elif args.mode == "plot":
         # Load the saved geodesic data
-        data = np.load("geodesics_data2.npz")
+        # for nb in range(10):
+        #     path = f"../PartB/experiment/model_run{nb}_dec1.pt"
+        model_name = "model_run1_dec1"
+        data = np.load("geodesic_data/" + model_name + ".npz")
         latents = torch.tensor(data["latent_points"])
         labels = torch.tensor(data["labels"])
         geodesics = [torch.tensor(g) for g in data["geodesic_points"]]
         pairs = [torch.tensor((s, e)) for s, e in zip(data["start_points"], data["end_points"])]
         pair_labels = np.array(data["start_classes"]), np.array(data["end_classes"])
 
-        plot_latent_space_with_geodesics(latents, labels, geodesics, pairs)
+        plot_latent_space_with_geodesics(latents, labels, geodesics, pairs, save_path="geodesic_plots/" + model_name +".png")
  
  ###########################################
             
